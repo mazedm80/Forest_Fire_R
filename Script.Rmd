@@ -1,0 +1,30 @@
+---
+title: "Origon Forest Fire Script"
+objectives:
+- "Extract summary pixel values from a raster."
+- "Save summary values to a .csv file."
+- "Plot summary pixel values using `ggplot()`."
+- "Compare NDVI values between two different sites."
+keypoints:
+- "Use the `cellStats()` function to calculate summary statistics for cells in a raster object."
+- "The pipe (`|`) operator means `or`."
+- "Use the `rbind()` function to combine data frames that have the same column names."
+output: html_notebook
+---
+
+
+```{r load-libraries, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+library(raster)
+library(rgdal)
+library(ggplot2)
+library(dplyr)
+```
+
+```{r load-data, echo=FALSE, results='hide'}
+setwd("C:/FIT/Research-Project")
+AOI <- readOGR("")
+LS8_pre <- list.files(path = "data/LC08_L1TP_045029_20200901_20200906_01_T1/",pattern='[B2|B4|B1].TIF$', all.files=TRUE, full.names = T)
+LS8_pre
+LS8_pre_stack <- lapply(LS8_pre, raster)
+plot(LS8_pre_stack[[1]],main = "Landsat cropped band 2\nCold Springs fire scar")
+```
