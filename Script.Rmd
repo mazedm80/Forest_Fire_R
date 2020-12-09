@@ -22,8 +22,12 @@ library(RStoolbox)
 library(rgdal)
 library(ggplot2)
 library(dplyr)
+library(dplyr)
 library(viridis)
 library(rasterVis)
+library(devtools)
+library(slidaRtools)
+
 ```
 
 # Loading the MetaData and Raster file
@@ -51,8 +55,6 @@ writeRaster(LS8_post_dos, filename="output/LS8_post_dos.tif", bandorder='BIL', o
 # Load the processed raster
 LS8_pre <- brick("output/LS8_pre_dos.tif")
 LS8_post <- brick("output/LS8_post_dos.tif")
-csr <- projection(LS8_pre)
-AOI <- spTransform(AOI, csr)
 # Names of the bands
 names(LS8_pre[[1]])
 # Ploting the RGB images of Pre fire and Post fire area
@@ -112,5 +114,44 @@ plot(nbr_diff_reclass,
 dev.off()
 # Saving the dNBR as tif
 writeRaster(nbr_diff_reclass, filename = "output/burnseverity20200906vs20201015.tif", format="GTiff", overwrite=T)
+```
+
+```{r LiDAR, echo=FALSE, results='hide'}
+library(lidR)
+library(data.table)
+library(tidyverse)
+las <- readLAS('data/FPC_WILSWH_439500_1186500_20160803.laz')
+head(las)
+nbr_diff_reclass <- raster('output/burnseverity20200906vs20201015.tif')
+crs <- projection(AOI)
+nbr <- projectRaster(nbr_diff_reclass, crs = crs)
+writeRaster(nbr, filename = "output/nbr_reproj.tif", format="GTiff", overwrite=T)
+
+hmean <- grid_metrics(las, ~mean(Z), 30) # calculate mean at 30 m
+crs(hmean) <- crs
+writeRaster(hmean,filename = "output/hmean_reproj.tif", format="GTiff", overwrite=T)
+
+extent(hmean)
+head(hmean)
+extent(nbr)
+
+resample <- resample(nbr, hmean, method="bilinear")
+
+rstack <- stack(resample, hmean)
+d <- values(rstack)
+plot(d)
+
+plot(resample)
+reg <- as.data.frame(rstack, xy = T)
+reg <- reg %>%
+  rename(
+    burn_index = burnseverity20200906vs20201015,
+    mean_Z = V1
+  )
+reg
+plot(reg)
+write.csv(reg, file = 'output/dataframe.csv')
+plot(nbr_diff_reclass, add = TRUE)
+
 ```
 
