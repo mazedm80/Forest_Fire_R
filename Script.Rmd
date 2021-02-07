@@ -55,9 +55,7 @@ writeRaster(LS8_post_dos, filename="output/LS8_post_dos.tif", bandorder='BIL', o
 # Load the processed raster
 LS8_pre <- brick("output/LS8_pre_dos.tif")
 LS8_post <- brick("output/LS8_post_dos.tif")
-# Names of the bands
-names(LS8_pre[[1]])
-# Ploting the RGB images of Pre fire and Post fire area
+# Plotting the RGB images of Pre fire and Post fire area
 plotRGB(LS8_pre_dos, r=3, g=2, b=1, stretch="lin")
 plotRGB(LS8_post_dos, r=3, g=2, b=1, stretch="lin")
 ```
@@ -74,29 +72,41 @@ nbr_LS8_pre <- calc(LS8_pre, fun = nbr)
 nbr_LS8_post <- calc(LS8_post, fun = nbr)
 # Difference in NBR
 nbr_diff <- (nbr_LS8_pre - nbr_LS8_post)
-# crop by the extent
-nbr_diff_crop <- crop(nbr_diff,extent(AOI))
-nbr_diff_crop <- mask(nbr_diff_crop, AOI)
+# set the new projection and crop by the extent
+crs <- projection(nbr_diff)
+crs
+AOI_reproj <- spTransform(AOI,crs)
+#nbr_diff <- projectRaster(nbr_diff, crs = crs)
+nbr_diff_crop <- crop(nbr_diff,extent(AOI_reproj))
+nbr_diff_crop <- mask(nbr_diff_crop, AOI_reproj)
 plot(nbr_diff_crop, col = rev(terrain.colors(10)), main = 'dNBR')
+# Saving the dNBR as tif
+writeRaster(nbr_diff_crop, filename = "output/BS.tif", format="GTiff", overwrite=T)
 ```
 
 # Classification of NBR
 ```{r nbr-classification, echo=FALSE, results='hide'}
-reclass_df <- c (-Inf, -0.5, 0, # out of range - no data
-                 -0.1, 0.099, 1, # unburned area
-                 0.1, 0.269, 2, # low severity
-                 0.27, 0.659, 3, # moderate severity
-                 0.66, 1.3, 4, # high severity
-                 1.31, +Inf, 0) # out of range - no data
+reclass_df <- c(-Inf, -0.5, 0, # NA values
+                -0.5, -0.251, 1, # Enhanced Regrowth, High
+                -0.251, -0.101, 2, # Enhanced Regrowth, Low
+                -0.101, 0.099, 3, # Unburned
+                0.099, 0.269, 4, # Low-severity
+                0.269, 0.439, 5, # Moderate-low Severity
+                0.439, 0.659, 6, # Moderate-High Severity
+                0.659, 1.300, 7, # High-severity
+                1.300, +Inf, 0) # NA values
 reclass_m <- matrix(reclass_df, ncol=3, byrow=TRUE)
-nbr_diff_reclass <- reclassify(nbr_diff_crop, reclass_m)
+nbr_diff_reclass <- reclassify(nbr_diff_crop, reclass_m, right = NA)
 legend_val <- c("NA values",
+                "Enhanced Regrowth, High",
+                "Enhanced Regrowth, Low",
                 "Unburned",
                 "Low-severity",
-                "Moderate-severity",
+                "Moderate-low Severity",
+                "Moderate-High Severity",
                 "High-severity"
                 )
-col_val <-  c("#6CD545","#28FFA0","#F3FF28","#F29029","#CE29F2")
+col_val <-  viridis(8, option = "A")
 
 jpeg('output/burnseverity20200906vs20201015.jpg',width = 1000, 
      height = 800, res=200, units = "px", quality = 100, pointsize=10)
@@ -113,45 +123,61 @@ plot(nbr_diff_reclass,
        xpd = T, bty='n')
 dev.off()
 # Saving the dNBR as tif
-writeRaster(nbr_diff_reclass, filename = "output/burnseverity20200906vs20201015.tif", format="GTiff", overwrite=T)
+writeRaster(nbr_diff_reclass, filename = "output/BS_Reclassified.tif", format="GTiff", overwrite=T)
 ```
 
-```{r LiDAR, echo=FALSE, results='hide'}
+# LiDAR data preperation
+```{r LiDAR-data prep, echo=FALSE, results='hide'}
 library(lidR)
 library(data.table)
 library(tidyverse)
-las <- readLAS('data/FPC_WILSWH_439500_1186500_20160803.laz')
-head(las)
-nbr_diff_reclass <- raster('output/burnseverity20200906vs20201015.tif')
-crs <- projection(AOI)
-nbr <- projectRaster(nbr_diff_reclass, crs = crs)
-writeRaster(nbr, filename = "output/nbr_reproj.tif", format="GTiff", overwrite=T)
+library(future)
+ctg <- readLAScatalog("data/Laztiles/", progress = TRUE)
+lidR:::catalog_laxindex(ctg)
+# Load an extra buffer around the processed file to properly process the catalog without edge artifacts
+future::plan(multisession, workers = 4L)
+lidR::set_lidr_threads(6)
+opt_chunk_buffer(ctg) <- 10
+opt_chunk_size(ctg) <- 0
+opt_progress(ctg) <- TRUE
+plot(ctg, chunk = TRUE)
+#export metrics files to the output folder
+opt_output_files(ctg) <- "output/lazoutput/{ORIGINALFILENAME}_metrics"
+# grid metrics of 30x30m with all standerd metrics
+get_metrics <- grid_metrics(ctg, .stdmetrics_z, 30)
+# names of the all 36 metrics
+attrnames = c("zmax", "zmean", "zsd", "zskew", "zkurt", "zentropy", "pzabovezmean", "pzabove2", "zq5", "zq10", "zq15", "zq20", "zq25", "zq30", "zq35", "zq40", "zq45", "zq50", "zq55", "zq60", "zq65", "zq70", "zq75", "zq80", "zq85", "zq90", "zq95", "zpcum1", "zpcum2", "zpcum3", "zpcum4", "zpcum5", "zpcum6", "zpcum7", "zpcum8", "zpcum9")
+# puting the right names in the metrics raster
+names(get_metrics) <- attrnames
+names(get_metrics)
+get_metrics_reproj <- projectRaster(get_metrics, crs = crs)
+writeRaster(get_metrics,filename = "output/Grid_metrics_reproject.tif", format="GTiff", overwrite=T)
+plot(get_metrics_reproj)
+```
 
-hmean <- grid_metrics(las, ~mean(Z), 30) # calculate mean at 30 m
-crs(hmean) <- crs
-writeRaster(hmean,filename = "output/hmean_reproj.tif", format="GTiff", overwrite=T)
 
-extent(hmean)
-head(hmean)
-extent(nbr)
+```{r data prep for ML, echo=FALSE, results='hide'}
+# Match the coordinate of both raster
+resample <- resample(nbr_diff_reclass, get_metrics_reproj, method="ngb")
+# Stack new resample raster and metrics raster
+rstack <- raster::stack(get_metrics_reproj,resample)
+# Polygons of the las tiles
+d_ext_zone <- readOGR("data/Laz_tiles.shp")
+# Change the projection to match the raster projection
+d_ext_zone <- spTransform(d_ext_zone, crs)
+# Crop and mask according to the polygon area
+overlap_area <- crop(rstack,extent(d_ext_zone))
+overlap_area <- mask(overlap_area,d_ext_zone)
 
-resample <- resample(nbr, hmean, method="bilinear")
+hist(overlap_area$layer)
 
-rstack <- stack(resample, hmean)
-d <- values(rstack)
-plot(d)
+df <- as.data.frame(overlap_area,na.rm = T ,xy = T)
 
-plot(resample)
-reg <- as.data.frame(rstack, xy = T)
-reg <- reg %>%
-  rename(
-    burn_index = burnseverity20200906vs20201015,
-    mean_Z = V1
-  )
-reg
-plot(reg)
-write.csv(reg, file = 'output/dataframe.csv')
-plot(nbr_diff_reclass, add = TRUE)
-
+write.csv(df, file = 'output/data.csv')
+saveRDS(overlap_area, file= 'output/data.rds')
+```
+```{r}
+plot(hist(resample))
+plot(hist(nbr_diff_reclass))
 ```
 
