@@ -1,0 +1,180 @@
+---
+title: ' Lionshead WildFire Burn Severity and Deep learning data preperation'
+author: "Mir Mazedur Rahaman"
+date: "1/12/2021"
+output: github_document
+objectives:
+- Pre Processing of Landsat images of Pre fire and Post fire.
+- Calculating pre and post NBR and dNBR.
+- Classification of dNBR.
+- LiDAR data processing
+- Lidar Strandard metrics calculation
+- Stack LiDAR and dNBR images
+- Extract values and save as .csv
+editor_options:
+  chunk_output_type: inline
+---
+
+# Loading required package
+```{r load-libraries, echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+library(raster)
+library(RStoolbox)
+library(rgdal)
+library(ggplot2)
+library(dplyr)
+library(dplyr)
+library(viridis)
+library(rasterVis)
+library(devtools)
+```
+
+# Loading the MetaData and Raster file
+```{r load-data, echo=TRUE, results='hide', cache=TRUE, eval=FALSE}
+setwd("C:/FIT/Research-Project/Code/")
+AOI <- readOGR("data/AOI.shp")
+# Pre fire Raster and metaData
+metaData_pre <- readMeta("data/LC08_L1TP_045029_20200901_20200906_01_T1/LC08_L1TP_045029_20200901_20200906_01_T1_MTL.txt")
+metaStack_pre <- stackMeta(metaData_pre)
+plot(metaStack_pre)
+# Post fire Raster and metaData
+metaData_post <- readMeta("data/LC08_L1TP_045029_20201003_20201015_01_T1/LC08_L1TP_045029_20201003_20201015_01_T1_MTL.txt")
+metaStack_post <- stackMeta(metaData_post)
+plot(metaStack_post)
+```
+
+# Image Pre Processing
+```{r image-preprocessing, echo=TRUE, cache=TRUE, results='markup', eval=FALSE}
+# DOS Correction pre fire images and saving stack raster as geoTiff
+LS8_pre_dos <- radCor(metaStack_pre, metaData_pre, method = "dos", bandSet = c(2,3,4,5,7))
+writeRaster(LS8_pre_dos, filename="output/LS8_pre_dos.tif", bandorder='BIL', overwrite=TRUE)
+# DOS Correction post fire images and saving stack raster as geoTiff
+LS8_post_dos <- radCor(metaStack_post, metaData_post, method = "dos", bandSet = c(2,3,4,5,7))
+writeRaster(LS8_post_dos, filename="output/LS8_post_dos.tif", bandorder='BIL', overwrite=TRUE)
+# Load the processed raster
+LS8_pre <- brick("output/LS8_pre_dos.tif")
+LS8_post <- brick("output/LS8_post_dos.tif")
+# Plotting the RGB images of Pre fire and Post fire area
+plotRGB(LS8_pre_dos, r=3, g=2, b=1, stretch="lin")
+plotRGB(LS8_post_dos, r=3, g=2, b=1, stretch="lin")
+```
+
+# Calculating pre and post NBR and dNBR
+```{r pre-post-NBR, echo=TRUE, cache=TRUE, results='markup', eval=FALSE}
+# Function for NBR calculation
+nbr <- function(img){
+  br <- (img[[4]]-img[[5]])/(img[[4]]+img[[5]])
+  return(br)
+}
+# Calculating pre and post fire NBR
+nbr_LS8_pre <- calc(LS8_pre, fun = nbr)
+nbr_LS8_post <- calc(LS8_post, fun = nbr)
+# Difference in NBR
+nbr_diff <- (nbr_LS8_pre - nbr_LS8_post)
+# set the new projection and crop by the extent
+crs <- projection(nbr_diff)
+crs
+AOI_reproj <- spTransform(AOI,crs)
+#nbr_diff <- projectRaster(nbr_diff, crs = crs)
+nbr_diff_crop <- crop(nbr_diff,extent(AOI_reproj))
+nbr_diff_crop <- mask(nbr_diff_crop, AOI_reproj)
+# Plot the dNBR raster and save as jpeg
+jpeg('output/dNBR.jpg',width = 1000, 
+     height = 700, res=200, units = "px", quality = 100, pointsize=10)
+par(mar=c(4,8,4,4))
+plot(nbr_diff_crop, col = rev(terrain.colors(10)), main = 'dNBR')
+dev.off()
+# Saving the dNBR as tif
+writeRaster(nbr_diff_crop, filename = "output/BS.tif", format="GTiff", overwrite=T)
+```
+
+# Classification of dNBR according to CBI threshold
+```{r dNBR classification, echo=TRUE, cache=TRUE, results='markup', eval=FALSE}
+reclass_df <- c(-Inf, -0.5, 0, # NA values
+                -0.5, 0.099, 1, # Unburned
+                0.099, 0.439, 2, # low Severity
+                0.439, 1.300, 3, # High-severity
+                1.300, +Inf, 0) # NA values
+reclass_m <- matrix(reclass_df, ncol=3, byrow=TRUE)
+nbr_diff_reclass <- reclassify(nbr_diff_crop, reclass_m, right = NA)
+legend_val <- c("NA Values",
+                "Unburned",
+                "Low-severity",
+                "High-severity"
+                )
+col_val <-  viridis(4, option = "A")
+
+jpeg('output/BS_reclass.jpg',width = 1000, 
+     height = 800, res=200, units = "px", quality = 100, pointsize=10)
+par(mar=c(4,8,4,4))
+plot(nbr_diff_reclass, 
+     main="Burn Severity Map of Lionshead",
+     col = col_val,
+     axes=F,
+     box=F,
+     legend=F)
+  legend('topright',
+       legend = legend_val ,fill=col_val,
+       inset=c(-0.25,0), pt.cex=0.7,cex=0.7,
+       xpd = T, bty='n')
+dev.off()
+# Saving the dNBR as tif
+writeRaster(nbr_diff_reclass, filename = "output/BS_Reclassified.tif", format="GTiff", overwrite=T)
+```
+
+# LiDAR data preperation
+```{r LiDAR-data prep, echo=TRUE, warning=FALSE, cache=TRUE, results='markup', eval=FALSE}
+library(lidR)
+library(data.table)
+library(tidyverse)
+library(future)
+ctg <- readLAScatalog("data/Laztiles/", progress = TRUE)
+lidR:::catalog_laxindex(ctg)
+# Load an extra buffer around the processed file to properly process the catalog without edge artifacts
+future::plan(multisession, workers = 4L)
+lidR::set_lidr_threads(6)
+opt_chunk_buffer(ctg) <- 10
+opt_chunk_size(ctg) <- 0
+opt_progress(ctg) <- TRUE
+plot(ctg, chunk = TRUE)
+#export metrics files to the output folder
+opt_output_files(ctg) <- "output/lazoutput/{ORIGINALFILENAME}_metrics"
+# grid metrics of 30x30m with all standerd metrics
+get_metrics <- grid_metrics(ctg, .stdmetrics_z, 30)
+# names of the all 36 metrics
+attrnames = c("zmax", "zmean", "zsd", "zskew", "zkurt", "zentropy", "pzabovezmean", "pzabove2", "zq5", "zq10", "zq15", "zq20", "zq25", "zq30", "zq35", "zq40", "zq45", "zq50", "zq55", "zq60", "zq65", "zq70", "zq75", "zq80", "zq85", "zq90", "zq95", "zpcum1", "zpcum2", "zpcum3", "zpcum4", "zpcum5", "zpcum6", "zpcum7", "zpcum8", "zpcum9")
+# putting the right names in the metrics raster
+names(get_metrics) <- attrnames
+names(get_metrics)
+# set the co
+get_metrics_reproj <- projectRaster(get_metrics, crs = crs)
+writeRaster(get_metrics,filename = "output/Grid_metrics_reproject.tif", format="GTiff", overwrite=T)
+plot(get_metrics_reproj)
+jpeg('output/std_metrics.jpg',width = 1000, 
+     height = 700, res=200, units = "px", quality = 100, pointsize=10)
+par(mar=c(4,8,4,4))
+plot(get_metrics_reproj, col = rev(terrain.colors(10)), main = 'Standard metrics')
+dev.off()
+```
+
+# Data preperation for Deep Learning
+```{r data prep for DL, echo=TRUE, warning=FALSE, cache=TRUE, results='markup', eval=FALSE}
+# Match the coordinate of both raster
+resample <- resample(nbr_diff_reclass, get_metrics_reproj, method="ngb")
+# Stack new resample raster and metrics raster
+rstack <- raster::stack(get_metrics_reproj,resample)
+# Polygons of the las tiles
+d_ext_zone <- readOGR("data/Laz_tiles.shp")
+# Change the projection to match the raster projection
+d_ext_zone <- spTransform(d_ext_zone, crs)
+# Crop and mask according to the polygon area
+overlap_area <- crop(rstack,extent(d_ext_zone))
+overlap_area <- mask(overlap_area,d_ext_zone)
+
+# maxValue(overlap_area$layer)
+
+df <- as.data.frame(overlap_area,na.rm = T ,xy = T)
+
+write.csv(df, file = 'output/data.csv')
+```
+
+
